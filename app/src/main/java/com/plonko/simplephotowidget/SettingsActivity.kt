@@ -1,13 +1,15 @@
 package com.plonko.simplephotowidget
 
-import android.app.Activity
 import android.appwidget.AppWidgetManager
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.widget.Button
+import androidx.appcompat.app.AppCompatActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
-class SettingsActivity : Activity() {
+class SettingsActivity : AppCompatActivity() {
 
     private var appWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
 
@@ -47,15 +49,24 @@ class SettingsActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode == RESULT_OK && requestCode == pickImage) {
             data?.data?.also { uri ->
+                // Persist permission to read the URI across device reboots
                 val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION
                 contentResolver.takePersistableUriPermission(uri, takeFlags)
 
                 saveImageUri(this, appWidgetId, uri)
 
-                // It is the responsibility of the caller to call AppWidgetManager.updateAppWidget
-                val resultValue = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
-                setResult(RESULT_OK, resultValue)
-                finish()
+                // Manually trigger the update so the image appears immediately
+                CoroutineScope(Dispatchers.Main).launch {
+                    val appWidgetManager = AppWidgetManager.getInstance(this@SettingsActivity)
+
+                    // Call the helper function from PhotoWidgetProvider.kt
+                    updateAppWidget(this@SettingsActivity, appWidgetManager, appWidgetId)
+
+                    // Configuration is complete.
+                    val resultValue = Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                    setResult(RESULT_OK, resultValue)
+                    finish()
+                }
             }
         }
     }
