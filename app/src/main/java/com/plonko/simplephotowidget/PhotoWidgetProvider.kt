@@ -5,6 +5,7 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -23,12 +24,12 @@ class PhotoWidgetProvider : AppWidgetProvider() {
         appWidgetIds: IntArray
     ) {
         val pendingResult = goAsync()
-        val job = CoroutineScope(Dispatchers.IO).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             appWidgetIds.forEach { appWidgetId ->
                 updateAppWidget(context, appWidgetManager, appWidgetId)
             }
+            pendingResult.finish()
         }
-        job.invokeOnCompletion { pendingResult.finish() }
     }
 
     override fun onAppWidgetOptionsChanged(
@@ -38,15 +39,16 @@ class PhotoWidgetProvider : AppWidgetProvider() {
         newOptions: Bundle?
     ) {
         val pendingResult = goAsync()
-        val job = CoroutineScope(Dispatchers.IO).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             updateAppWidget(context, appWidgetManager, appWidgetId)
+            pendingResult.finish()
         }
-        job.invokeOnCompletion { pendingResult.finish() }
     }
 
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
         for (appWidgetId in appWidgetIds) {
             deleteImageUri(context, appWidgetId)
+            deleteTransparency(context, appWidgetId)
         }
     }
 }
@@ -57,9 +59,9 @@ suspend fun updateAppWidget(
     appWidgetId: Int
 ) {
     val imageUri = loadImageUri(context, appWidgetId)
+    val transparency = loadTransparency(context, appWidgetId)
     val views = RemoteViews(context.packageName, R.layout.photo_widget)
 
-    // Create an Intent to launch SettingsActivity
     val intent = Intent(context, SettingsActivity::class.java).apply {
         putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
@@ -69,27 +71,15 @@ suspend fun updateAppWidget(
 
     if (imageUri != null) {
         try {
-            val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
-            val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
-            val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
-            val targetWidth = (minWidth * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
-            val targetHeight = (maxHeight * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
-
             val bitmap = withContext(Dispatchers.IO) {
-                val bitmapOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                context.contentResolver.openInputStream(imageUri)?.use {
-                    BitmapFactory.decodeStream(it, null, bitmapOptions)
-                }
-
-                bitmapOptions.inSampleSize = calculateInSampleSize(bitmapOptions, targetWidth, targetHeight)
-                bitmapOptions.inJustDecodeBounds = false
-
-                context.contentResolver.openInputStream(imageUri)?.use {
-                    BitmapFactory.decodeStream(it, null, bitmapOptions)
-                }
+                decodeSampledBitmapFromUri(context, imageUri, appWidgetManager.getAppWidgetOptions(appWidgetId))
             }
-
-            views.setImageViewBitmap(R.id.widget_image, bitmap)
+            if (bitmap != null) {
+                views.setImageViewBitmap(R.id.widget_image, bitmap)
+                views.setInt(R.id.widget_image, "setImageAlpha", ((100f - transparency) / 100f * 255).toInt())
+            } else {
+                views.setImageViewResource(R.id.widget_image, R.mipmap.ic_launcher)
+            }
         } catch (e: Exception) {
             Log.e("PhotoWidgetProvider", "Error updating widget", e)
             views.setImageViewResource(R.id.widget_image, R.mipmap.ic_launcher)
@@ -99,6 +89,21 @@ suspend fun updateAppWidget(
     }
 
     appWidgetManager.updateAppWidget(appWidgetId, views)
+}
+
+suspend fun decodeSampledBitmapFromUri(context: Context, imageUri: Uri, options: Bundle): Bitmap? {
+    return withContext(Dispatchers.IO) {
+        val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+        val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+        val targetWidth = (minWidth * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        val targetHeight = (maxHeight * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+
+        val bitmapOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(imageUri)?.use { BitmapFactory.decodeStream(it, null, bitmapOptions) }
+        bitmapOptions.inSampleSize = calculateInSampleSize(bitmapOptions, targetWidth, targetHeight)
+        bitmapOptions.inJustDecodeBounds = false
+        context.contentResolver.openInputStream(imageUri)?.use { BitmapFactory.decodeStream(it, null, bitmapOptions) }
+    }
 }
 
 fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeight: Int): Int {
@@ -116,7 +121,7 @@ fun calculateInSampleSize(options: BitmapFactory.Options, reqWidth: Int, reqHeig
 
 internal fun saveImageUri(context: Context, appWidgetId: Int, imageUri: Uri) {
     val prefs = context.getSharedPreferences(context.packageName, Context.MODE_PRIVATE).edit()
-    prefs.putString("widget_image_uri_$appWidgetId", imageUri.toString()).apply()
+    prefs.putString("widget_image_uri_$appWidgetId", imageUri.toString()).commit()
 }
 
 internal fun loadImageUri(context: Context, appWidgetId: Int): Uri? {
@@ -126,5 +131,21 @@ internal fun loadImageUri(context: Context, appWidgetId: Int): Uri? {
 
 internal fun deleteImageUri(context: Context, appWidgetId: Int) {
     val prefs = context.getSharedPreferences(context.packageName, Context.MODE_PRIVATE).edit()
-    prefs.remove("widget_image_uri_$appWidgetId").apply()
+    prefs.remove("widget_image_uri_$appWidgetId").commit()
+    prefs.remove("widget_corner_radius_$appWidgetId").commit()
+}
+
+internal fun saveTransparency(context: Context, appWidgetId: Int, transparency: Float) {
+    val prefs = context.getSharedPreferences(context.packageName, Context.MODE_PRIVATE).edit()
+    prefs.putFloat("widget_transparency_$appWidgetId", transparency).commit()
+}
+
+internal fun loadTransparency(context: Context, appWidgetId: Int): Float {
+    val prefs = context.getSharedPreferences(context.packageName, Context.MODE_PRIVATE)
+    return prefs.getFloat("widget_transparency_$appWidgetId", 0f)
+}
+
+internal fun deleteTransparency(context: Context, appWidgetId: Int) {
+    val prefs = context.getSharedPreferences(context.packageName, Context.MODE_PRIVATE).edit()
+    prefs.remove("widget_transparency_$appWidgetId").commit()
 }
