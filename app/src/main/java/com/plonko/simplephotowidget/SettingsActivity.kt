@@ -49,6 +49,7 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         binding.selectPhotoButton.setOnClickListener { openGallery() }
+        binding.abortButton.setOnClickListener { finish() }
         binding.saveButton.setOnClickListener { saveAndFinish() }
     }
 
