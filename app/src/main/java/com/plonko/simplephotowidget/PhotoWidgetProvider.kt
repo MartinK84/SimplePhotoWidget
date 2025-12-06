@@ -1,8 +1,10 @@
 package com.plonko.simplephotowidget
 
+import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -54,33 +56,45 @@ suspend fun updateAppWidget(
     appWidgetManager: AppWidgetManager,
     appWidgetId: Int
 ) {
-    val imageUri = loadImageUri(context, appWidgetId) ?: return
+    val imageUri = loadImageUri(context, appWidgetId)
     val views = RemoteViews(context.packageName, R.layout.photo_widget)
 
-    try {
-        val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
-        val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
-        val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
-        val targetWidth = (minWidth * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
-        val targetHeight = (maxHeight * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+    // Create an Intent to launch SettingsActivity
+    val intent = Intent(context, SettingsActivity::class.java).apply {
+        putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+    }
+    val pendingIntent = PendingIntent.getActivity(context, appWidgetId, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    views.setOnClickPendingIntent(R.id.widget_image, pendingIntent)
 
-        val bitmap = withContext(Dispatchers.IO) {
-            val bitmapOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(imageUri)?.use {
-                BitmapFactory.decodeStream(it, null, bitmapOptions)
+    if (imageUri != null) {
+        try {
+            val options = appWidgetManager.getAppWidgetOptions(appWidgetId)
+            val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH)
+            val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT)
+            val targetWidth = (minWidth * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+            val targetHeight = (maxHeight * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+
+            val bitmap = withContext(Dispatchers.IO) {
+                val bitmapOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(imageUri)?.use {
+                    BitmapFactory.decodeStream(it, null, bitmapOptions)
+                }
+
+                bitmapOptions.inSampleSize = calculateInSampleSize(bitmapOptions, targetWidth, targetHeight)
+                bitmapOptions.inJustDecodeBounds = false
+
+                context.contentResolver.openInputStream(imageUri)?.use {
+                    BitmapFactory.decodeStream(it, null, bitmapOptions)
+                }
             }
 
-            bitmapOptions.inSampleSize = calculateInSampleSize(bitmapOptions, targetWidth, targetHeight)
-            bitmapOptions.inJustDecodeBounds = false
-
-            context.contentResolver.openInputStream(imageUri)?.use {
-                BitmapFactory.decodeStream(it, null, bitmapOptions)
-            }
+            views.setImageViewBitmap(R.id.widget_image, bitmap)
+        } catch (e: Exception) {
+            Log.e("PhotoWidgetProvider", "Error updating widget", e)
+            views.setImageViewResource(R.id.widget_image, R.mipmap.ic_launcher)
         }
-
-        views.setImageViewBitmap(R.id.widget_image, bitmap)
-    } catch (e: Exception) {
-        Log.e("PhotoWidgetProvider", "Error updating widget", e)
+    } else {
         views.setImageViewResource(R.id.widget_image, R.mipmap.ic_launcher)
     }
 
